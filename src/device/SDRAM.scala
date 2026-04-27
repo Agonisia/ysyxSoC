@@ -47,6 +47,88 @@ class sdram extends BlackBox {
 
 class sdramChisel extends RawModule {
   val io = IO(Flipped(new SDRAMIO))
+
+  private val halfwords = 16 * 1024 * 1024
+
+  private val cmdActive = "b0011".U(4.W)
+  private val cmdRead = "b0101".U(4.W)
+  private val cmdWrite = "b0100".U(4.W)
+  private val cmdPrecharge = "b0010".U(4.W)
+  private val cmdRefresh = "b0001".U(4.W)
+  private val cmdLoadMode = "b0000".U(4.W)
+
+  val dqOut = WireDefault(0.U(16.W))
+  val dqOutEnable = WireDefault(false.B)
+  val dqIn = TriStateInBuf(io.dq, dqOut, dqOutEnable)
+
+  withClockAndReset(io.clk.asClock, (!io.cke).asAsyncReset) {
+    val mem = Mem(halfwords, UInt(16.W))
+    val activeRow = RegInit(VecInit(Seq.fill(4)(0.U(13.W))))
+    val dqOutReg = RegInit(0.U(16.W))
+    val dqOutEnableReg = RegInit(false.B)
+    val pendingWriteUpper = RegInit(false.B)
+    val pendingReadStage = RegInit(0.U(2.W))
+    val burstAddr = RegInit(0.U(24.W))
+    val modeReg = RegInit(0.U(13.W))
+
+    val cmd = Cat(io.cs, io.ras, io.cas, io.we)
+    val currentAddr = Cat(activeRow(io.ba), io.ba, io.a(8, 0))
+
+    dqOut := dqOutReg
+    dqOutEnable := dqOutEnableReg
+
+    def writeHalfword(index: UInt, data: UInt, mask: UInt): Unit = {
+      val oldData = mem.read(index)
+      val nextData = Cat(
+        Mux(!mask(1), data(15, 8), oldData(15, 8)),
+        Mux(!mask(0), data(7, 0), oldData(7, 0))
+      )
+      mem.write(index, nextData)
+    }
+
+    when (pendingWriteUpper) {
+      writeHalfword(burstAddr + 1.U, dqIn, io.dqm)
+      pendingWriteUpper := false.B
+    }
+
+    when (pendingReadStage === 1.U) {
+      dqOutReg := mem.read(burstAddr)
+      dqOutEnableReg := true.B
+      pendingReadStage := 2.U
+    } .elsewhen (pendingReadStage === 2.U) {
+      dqOutReg := mem.read(burstAddr + 1.U)
+      dqOutEnableReg := true.B
+      pendingReadStage := 0.U
+    } .otherwise {
+      dqOutEnableReg := false.B
+    }
+
+    switch (cmd) {
+      is (cmdLoadMode) {
+        modeReg := io.a
+      }
+      is (cmdActive) {
+        activeRow(io.ba) := io.a
+      }
+      is (cmdRead) {
+        burstAddr := currentAddr
+        pendingReadStage := 1.U
+      }
+      is (cmdWrite) {
+        burstAddr := currentAddr
+        writeHalfword(currentAddr, dqIn, io.dqm)
+        pendingWriteUpper := true.B
+      }
+      is (cmdPrecharge) {
+        pendingWriteUpper := false.B
+        pendingReadStage := 0.U
+      }
+      is (cmdRefresh) {
+        pendingWriteUpper := false.B
+        pendingReadStage := 0.U
+      }
+    }
+  }
 }
 
 class AXI4SDRAM(address: Seq[AddressSet])(implicit p: Parameters) extends LazyModule {

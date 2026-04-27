@@ -30,7 +30,51 @@ class psram extends BlackBox {
 
 class psramChisel extends RawModule {
   val io = IO(Flipped(new QSPIIO))
-  val di = TriStateInBuf(io.dio, 0.U, false.B) // change this if you need
+  private val memBytes = 4 * 1024 * 1024
+  private val addrMask = (memBytes - 1).U(22.W)
+
+  val dioOut = WireDefault(0.U(4.W))
+  val dioOutEnable = WireDefault(false.B)
+  val dioIn = TriStateInBuf(io.dio, dioOut, dioOutEnable)
+
+  withClockAndReset(io.sck.asClock, io.ce_n.asAsyncReset) {
+    val mem = Mem(memBytes, UInt(8.W))
+    val phase = RegInit(0.U(8.W))
+    val cmdShift = RegInit(0.U(8.W))
+    val cmd = RegInit(0.U(8.W))
+    val addr = RegInit(0.U(24.W))
+    val writeHi = RegInit(0.U(4.W))
+
+    val readDelta = phase - 21.U
+    val readByteOffset = readDelta(7, 1)
+    val readAddr = (addr(21, 0) + readByteOffset) & addrMask
+    val readByte = mem.read(readAddr)
+    val readPhase = !io.ce_n && cmd === "heb".U && phase >= 21.U
+
+    val writeDelta = phase - 14.U
+    val writeByteOffset = writeDelta(7, 1)
+    val writeAddr = (addr(21, 0) + writeByteOffset) & addrMask
+
+    dioOut := Mux(phase(0), readByte(7, 4), readByte(3, 0))
+    dioOutEnable := readPhase
+
+    when (phase < 8.U) {
+      cmdShift := Cat(cmdShift(6, 0), dioIn(0))
+      when (phase === 7.U) {
+        cmd := Cat(cmdShift(6, 0), dioIn(0))
+      }
+    } .elsewhen (phase < 14.U) {
+      addr := Cat(addr(19, 0), dioIn)
+    } .elsewhen (cmd === "h38".U) {
+      when (!phase(0)) {
+        writeHi := dioIn
+      } .otherwise {
+        mem.write(writeAddr, Cat(writeHi, dioIn))
+      }
+    }
+
+    phase := phase + 1.U
+  }
 }
 
 class APBPSRAM(address: Seq[AddressSet])(implicit p: Parameters) extends LazyModule {
