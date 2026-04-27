@@ -29,6 +29,16 @@ class flash extends BlackBox {
   val io = IO(Flipped(new SPIIO(1)))
 }
 
+class flash_cmd extends BlackBox {
+  val io = IO(new Bundle {
+    val clock = Input(Clock())
+    val valid = Input(Bool())
+    val cmd = Input(UInt(8.W))
+    val addr = Input(UInt(32.W))
+    val data = Output(UInt(32.W))
+  })
+}
+
 class APBSPI(address: Seq[AddressSet])(implicit p: Parameters) extends LazyModule {
   val node = APBSlaveNode(Seq(APBSlavePortParameters(
     Seq(APBSlaveParameters(
@@ -46,7 +56,29 @@ class APBSPI(address: Seq[AddressSet])(implicit p: Parameters) extends LazyModul
     val mspi = Module(new spi_top_apb)
     mspi.io.clock := clock
     mspi.io.reset := reset
-    mspi.io.in <> in
     spi_bundle <> mspi.io.spi
+
+    val paddr = Cat(0.U(2.W), in.paddr)
+    val isFlash = paddr >= "h3000_0000".U && paddr <= "h3fff_ffff".U
+    val flashSelected = in.psel && isFlash
+    val flashRead = flashSelected && !in.penable && !in.pwrite
+
+    val mflash = Module(new flash_cmd)
+    mflash.io.clock := clock
+    mflash.io.valid := flashRead
+    mflash.io.cmd := "h03".U
+    mflash.io.addr := paddr
+
+    mspi.io.in.psel := in.psel && !isFlash
+    mspi.io.in.penable := in.penable && !isFlash
+    mspi.io.in.pwrite := in.pwrite
+    mspi.io.in.paddr := paddr
+    mspi.io.in.pprot := in.pprot
+    mspi.io.in.pwdata := in.pwdata
+    mspi.io.in.pstrb := in.pstrb
+
+    in.pready := Mux(flashSelected, in.penable, mspi.io.in.pready)
+    in.pslverr := Mux(flashSelected, in.pwrite && in.penable, mspi.io.in.pslverr)
+    in.prdata := Mux(flashSelected, mflash.io.data, mspi.io.in.prdata)
   }
 }
