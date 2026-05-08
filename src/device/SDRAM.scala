@@ -53,6 +53,7 @@ class sdramChisel extends RawModule {
   private val cmdActive = "b0011".U(4.W)
   private val cmdRead = "b0101".U(4.W)
   private val cmdWrite = "b0100".U(4.W)
+  private val cmdTerminate = "b0110".U(4.W)
   private val cmdPrecharge = "b0010".U(4.W)
   private val cmdRefresh = "b0001".U(4.W)
   private val cmdLoadMode = "b0000".U(4.W)
@@ -66,13 +67,30 @@ class sdramChisel extends RawModule {
     val activeRow = RegInit(VecInit(Seq.fill(4)(0.U(13.W))))
     val dqOutReg = RegInit(0.U(16.W))
     val dqOutEnableReg = RegInit(false.B)
-    val pendingWriteUpper = RegInit(false.B)
-    val pendingReadStage = RegInit(0.U(2.W))
-    val burstAddr = RegInit(0.U(24.W))
     val modeReg = RegInit(0.U(13.W))
+    val readActive = RegInit(false.B)
+    val readDelay = RegInit(0.U(3.W))
+    val readBeatsLeft = RegInit(0.U(4.W))
+    val readAddr = RegInit(0.U(24.W))
+    val writeActive = RegInit(false.B)
+    val writeBeatsLeft = RegInit(0.U(4.W))
+    val writeAddr = RegInit(0.U(24.W))
 
     val cmd = Cat(io.cs, io.ras, io.cas, io.we)
     val currentAddr = Cat(activeRow(io.ba), io.ba, io.a(8, 0))
+    val burstBeats = MuxLookup(modeReg(2, 0), 1.U(4.W))(Seq(
+      "b000".U -> 1.U(4.W),
+      "b001".U -> 2.U(4.W),
+      "b010".U -> 4.U(4.W),
+      "b011".U -> 8.U(4.W)
+    ))
+    val casLatency = MuxLookup(modeReg(6, 4), 2.U(3.W))(Seq(
+      "b001".U -> 1.U(3.W),
+      "b010".U -> 2.U(3.W),
+      "b011".U -> 3.U(3.W)
+    ))
+    val readDelayStart = Mux(casLatency > 1.U, casLatency - 2.U, 0.U)
+    val extraWriteBeats = burstBeats - 1.U
 
     dqOut := dqOutReg
     dqOutEnable := dqOutEnableReg
@@ -86,46 +104,67 @@ class sdramChisel extends RawModule {
       mem.write(index, nextData)
     }
 
-    when (pendingWriteUpper) {
-      writeHalfword(burstAddr + 1.U, dqIn, io.dqm)
-      pendingWriteUpper := false.B
+    dqOutEnableReg := false.B
+
+    when (readActive) {
+      when (readDelay =/= 0.U) {
+        readDelay := readDelay - 1.U
+      } .otherwise {
+        dqOutReg := mem.read(readAddr)
+        dqOutEnableReg := true.B
+        readAddr := readAddr + 1.U
+        when (readBeatsLeft <= 1.U) {
+          readActive := false.B
+        } .otherwise {
+          readBeatsLeft := readBeatsLeft - 1.U
+        }
+      }
     }
 
-    when (pendingReadStage === 1.U) {
-      dqOutReg := mem.read(burstAddr)
-      dqOutEnableReg := true.B
-      pendingReadStage := 2.U
-    } .elsewhen (pendingReadStage === 2.U) {
-      dqOutReg := mem.read(burstAddr + 1.U)
-      dqOutEnableReg := true.B
-      pendingReadStage := 0.U
-    } .otherwise {
-      dqOutEnableReg := false.B
+    when (writeActive) {
+      writeHalfword(writeAddr, dqIn, io.dqm)
+      writeAddr := writeAddr + 1.U
+      when (writeBeatsLeft <= 1.U) {
+        writeActive := false.B
+      } .otherwise {
+        writeBeatsLeft := writeBeatsLeft - 1.U
+      }
     }
 
     switch (cmd) {
       is (cmdLoadMode) {
         modeReg := io.a
+        readActive := false.B
+        writeActive := false.B
       }
       is (cmdActive) {
         activeRow(io.ba) := io.a
       }
       is (cmdRead) {
-        burstAddr := currentAddr
-        pendingReadStage := 1.U
+        readActive := true.B
+        readDelay := readDelayStart
+        readBeatsLeft := burstBeats
+        readAddr := currentAddr
+        writeActive := false.B
       }
       is (cmdWrite) {
-        burstAddr := currentAddr
         writeHalfword(currentAddr, dqIn, io.dqm)
-        pendingWriteUpper := true.B
+        writeAddr := currentAddr + 1.U
+        writeBeatsLeft := extraWriteBeats
+        writeActive := burstBeats =/= 1.U
+        readActive := false.B
+      }
+      is (cmdTerminate) {
+        readActive := false.B
+        writeActive := false.B
       }
       is (cmdPrecharge) {
-        pendingWriteUpper := false.B
-        pendingReadStage := 0.U
+        readActive := false.B
+        writeActive := false.B
       }
       is (cmdRefresh) {
-        pendingWriteUpper := false.B
-        pendingReadStage := 0.U
+        readActive := false.B
+        writeActive := false.B
       }
     }
   }
