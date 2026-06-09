@@ -6,8 +6,11 @@ import freechips.rocketchip.system._
 import freechips.rocketchip.diplomacy.LazyModule
 
 object Config {
-  def hasChipLink: Boolean = false
-  def sdramUseAXI: Boolean = false
+  private def envFlag(name: String): Boolean =
+    sys.env.get(name).exists(value => value == "1" || value.equalsIgnoreCase("true"))
+
+  def hasChipLink: Boolean = envFlag("YSYXSOC_CHIPLINK")
+  def sdramUseAXI: Boolean = envFlag("YSYXSOC_SDRAM_AXI")
 }
 
 class ysyxSoCTop extends Module {
