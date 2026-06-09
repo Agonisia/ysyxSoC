@@ -2,7 +2,7 @@ package ysyx
 
 import chisel3._
 import chisel3.util._
-import chisel3.experimental.Analog
+import chisel3.experimental.{Analog, attach}
 
 class TriStateInBuf(bits: Int) extends BlackBox(Map("width" -> bits)) with HasBlackBoxInline {
   val io = IO(new Bundle {
@@ -30,7 +30,7 @@ class TriStateInBuf(bits: Int) extends BlackBox(Map("width" -> bits)) with HasBl
 object TriStateInBuf {
   def apply(dio: Analog, dout: UInt, out_en: Bool) = {
     val buf = Module(new TriStateInBuf(dio.getWidth))
-    buf.io.dio <> dio
+    attach(buf.io.dio, dio)
     buf.io.dout := dout
     buf.io.out_en := out_en
     buf.io.din
